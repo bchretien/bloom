@@ -25,6 +25,9 @@ setup(
     version='0.5.1',
     packages=find_packages(exclude=['test']),
     package_data={
+        'bloom.generators.arch': [
+            'bloom/generators/arch/templates/*'
+        ],
         'bloom.generators.debian': [
             'bloom/generators/debian/templates/*',
             'bloom/generators/debian/templates/source/*'
@@ -69,12 +72,16 @@ generation of platform specific source packages, like debian's src-debs.""",
         'bloom.generators': [
             'release = bloom.generators.release:ReleaseGenerator',
             'rosrelease = bloom.generators.rosrelease:RosReleaseGenerator',
+            'arch = bloom.generators.arch:ArchGenerator',
+            'rosarch = bloom.generators.rosarch:RosArchGenerator',
             'debian = bloom.generators.debian:DebianGenerator',
             'rosdebian = bloom.generators.rosdebian:RosDebianGenerator',
             'rpm = bloom.generators.rpm:RpmGenerator',
             'rosrpm = bloom.generators.rosrpm:RosRpmGenerator'
         ],
         'bloom.generate_cmds': [
+            'arch = bloom.generators.arch.generate_cmd:description',
+            'rosarch = bloom.generators.rosarch:description',
             'debian = bloom.generators.debian.generate_cmd:description',
             'rosdebian = bloom.generators.rosdebian:description',
             'rpm = bloom.generators.rpm.generate_cmd:description',
