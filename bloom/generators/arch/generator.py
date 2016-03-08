@@ -181,7 +181,7 @@ def format_depends(depends, resolved_deps):
                 formatted.append(resolved_dep)
             else:
                 for v in version_depends:
-                    formatted.append("{0} {1} {2}".format(
+                    formatted.append("{0}{1}{2}".format(
                         resolved_dep, versions[v], getattr(d, v)))
     return formatted
 
@@ -231,7 +231,7 @@ def generate_substitutions_from_package(
     os_version,
     ros_distro,
     installation_prefix='/usr',
-    arch_inc=0,
+    arch_inc=1,
     peer_packages=None,
     releaser_history=None,
     fallback_resolver=None
@@ -255,10 +255,30 @@ def generate_substitutions_from_package(
     data['PKGBUILDInc'] = arch_inc
     # Package name
     data['Package'] = sanitize_package_name(package.name)
-    #
+    # ROS distribution
     data['ROSDistro'] = ros_distro
     # Installation prefix
     data['InstallationPrefix'] = installation_prefix
+
+    # Python support
+    python_version = "2.7" # TODO: make it settable by the user
+    python_version_major = python_version.split('.')[0]
+    python_version_full = python_version
+    # Python 3 include directory is /usr/include/python3.5m
+    if python_version_major == "3":
+      python_version_full = "%s%s" % (python_version_full, "m")
+
+    # PYTHON_BASENAME for PySide (only with Python 2)
+    python_basename = ""
+    if python_version_major == "2":
+        python_basename = "-python2.7"
+
+    data['PythonExecutable'] = '/usr/bin/python%s' % python_version_major
+    data['PythonIncludeDir'] = '/usr/include/python%s' % python_version_full
+    data['PythonLibrary'] = '/usr/lib/libpython%s.so' % python_version_full
+    data['PythonBasename'] = python_basename
+    data['PythonMajor'] = python_version_major
+
     # Resolve dependencies
     depends = package.run_depends
     build_depends = package.build_depends + package.buildtool_depends
@@ -410,7 +430,7 @@ class ArchGenerator(BloomGenerator):
     def prepare_arguments(self, parser):
         # Add command line arguments for this generator
         add = parser.add_argument
-        add('-i', '--arch-inc', help="PKGBUILD increment number", default='0')
+        add('-i', '--arch-inc', help="PKGBUILD increment number", default='1')
         add('-p', '--prefix', required=True,
             help="branch prefix to match, and from which create PKGBUILDs"
                  " hint: if you want to match 'release/foo' use 'release'")
@@ -633,10 +653,6 @@ class ArchGenerator(BloomGenerator):
         execute_command('git add ' + arch_dir)
         # Commit changes
         execute_command('git commit -m "Generated PKGBUILD files"')
-        # Rename the template PKGBUILD file
-        execute_command('git mv ' + arch_dir + '/template.pkgbuild ' + arch_dir + '/' + subs['Package'] + 'PKGBUILD')
-        # Commit changes
-        execute_command('git commit -m "Renamed PKGBUILD template file"')
         # Return the subs for other use
         return subs
 
