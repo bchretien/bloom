@@ -2,11 +2,11 @@
 # Maintainer: @(Maintainer)
 
 pkgdesc="ROS - @(Description)"
-url=@(Homepage)
+url="@(Homepage)"
 
 pkgname='@(Package)'
 pkgver='@(Version)'
-arch=('i686' 'x86_64')
+arch=('any')
 pkgrel=@(PKGBUILDInc)
 license=('@(License)')
 changelog='changelog'
