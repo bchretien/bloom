@@ -1,6 +1,6 @@
 # Software License Agreement (BSD License)
 #
-# Copyright (c) 2014, Willow Garage, Inc.
+# Copyright (c) 2016, Willow Garage, Inc.
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -32,6 +32,7 @@
 
 from __future__ import print_function
 
+import collections
 import datetime
 import json
 import os
@@ -45,10 +46,13 @@ import textwrap
 from dateutil import tz
 
 from bloom.generators import BloomGenerator
+from bloom.generators import GeneratorError
 from bloom.generators import resolve_dependencies
 from bloom.generators import update_rosdep
 
 from bloom.generators.common import default_fallback_resolver
+from bloom.generators.common import invalidate_view_cache
+from bloom.generators.common import resolve_rosdep_key
 
 from bloom.git import inbranch
 from bloom.git import get_branches
@@ -61,7 +65,6 @@ from bloom.git import tag_exists
 from bloom.logging import ansi
 from bloom.logging import debug
 from bloom.logging import enable_drop_first_log_prefix
-enable_drop_first_log_prefix(True)
 from bloom.logging import error
 from bloom.logging import fmt
 from bloom.logging import info
@@ -73,6 +76,7 @@ from bloom.commands.git.patch.common import set_patch_config
 
 from bloom.packages import get_package_data
 
+from bloom.util import code
 from bloom.util import to_unicode
 from bloom.util import execute_command
 from bloom.util import get_rfc_2822_date
@@ -96,6 +100,9 @@ try:
 except ImportError:
     debug(traceback.format_exc())
     error("empy was not detected, please install it.", exit=True)
+
+# Drop the first log prefix for this command
+enable_drop_first_log_prefix(True)
 
 TEMPLATE_EXTENSION = '.em'
 
@@ -248,11 +255,12 @@ def generate_substitutions_from_package(
         warning("No license set")
     # Websites
     websites = [str(url) for url in package.urls if url.type == 'website']
-    data['Homepage'] = websites[0] if websites else ''
-    if data['Homepage'] == '':
-        warning("No homepage set")
+    homepage = websites[0] if websites else ''
+    if homepage == '':
+        warning("No homepage set, defaulting to ''")
+    data['Homepage'] = homepage
     # PKGBUILD Increment Number
-    data['PKGBUILDInc'] = arch_inc
+    data['Pkgrel'] = arch_inc
     # Package name
     data['Package'] = sanitize_package_name(package.name)
     # ROS distribution
@@ -280,12 +288,14 @@ def generate_substitutions_from_package(
     data['PythonMajor'] = python_version_major
 
     # Resolve dependencies
-    depends = package.run_depends
-    build_depends = package.build_depends + package.buildtool_depends
+    depends = package.run_depends + package.buildtool_export_depends
+    build_depends = package.build_depends + package.buildtool_depends + package.test_depends
     unresolved_keys = depends + build_depends + package.replaces + package.conflicts
+    # The installer key is not considered here, but it is checked when the keys are checked before this
     resolved_deps = resolve_dependencies(unresolved_keys, os_name,
                                          os_version, ros_distro,
-                                         peer_packages, fallback_resolver)
+                                         peer_packages + [d.name for d in package.replaces + package.conflicts],
+                                         fallback_resolver)
     data['Depends'] = sorted(
         set(format_depends(depends, resolved_deps))
     )
@@ -302,7 +312,8 @@ def generate_substitutions_from_package(
     data['Distribution'] = os_version
     # Use the time stamp to set the date strings
     stamp = datetime.datetime.now(tz.tzlocal())
-    data['Date'] = stamp.strftime('%a %b %d %Y')
+    data['Date'] = stamp.strftime('%a, %d %b %Y %T %z')
+    data['YYYY'] = stamp.strftime('%Y')
     # Maintainers
     maintainers = []
     for m in package.maintainers:
@@ -372,7 +383,7 @@ def process_template_files(path, subs):
     return __process_template_folder(arch_dir, subs)
 
 
-def match_branches_with_prefix(prefix, get_branches):
+def match_branches_with_prefix(prefix, get_branches, prune=False):
     debug("match_branches_with_prefix(" + str(prefix) + ", " +
           str(get_branches()) + ")")
     branches = []
@@ -383,7 +394,15 @@ def match_branches_with_prefix(prefix, get_branches):
             branch = branch.split('/', 2)[-1]
         if branch.startswith(prefix):
             branches.append(branch)
-    return list(set(branches))
+    branches = list(set(branches))
+    if prune:
+        # Prune listed branches by packages in latest upstream
+        with inbranch('upstream'):
+            pkg_names, version, pkgs_dict = get_package_data('upstream')
+            for branch in branches:
+                if branch.split(prefix)[-1].strip('/') not in pkg_names:
+                    branches.remove(branch)
+    return branches
 
 
 def get_package_from_branch(branch):
@@ -424,30 +443,51 @@ class ArchGenerator(BloomGenerator):
     description = "Generates PKGBUILD (Arch Linux packaging script) for the " \
                   "catkin metadata",
     has_run_rosdep = False
-    rosdistro = os.environ.get('ROS_DISTRO', 'hydro')
+    rosdistro = os.environ.get('ROS_DISTRO', 'indigo')
     default_install_prefix = '/opt/ros/' + rosdistro
 
     def prepare_arguments(self, parser):
         # Add command line arguments for this generator
         add = parser.add_argument
-        add('-i', '--arch-inc', help="PKGBUILD increment number", default='1')
+        add('-i', '--arch-inc', help="PKGBUILD increment number (pkgrel)", default='1')
         add('-p', '--prefix', required=True,
             help="branch prefix to match, and from which create PKGBUILDs"
                  " hint: if you want to match 'release/foo' use 'release'")
+        add('-a', '--match-all', default=False, action="store_true",
+            help="match all branches with the given prefix, "
+                 "even if not in current upstream")
+        add('--distros', nargs='+', required=False, default=[],
+            help='A list of PKGBUILD (e.g. Arch Linux) distros to generate for')
         add('--install-prefix', default=None,
-            help="overrides the default installation prefix (/opt/ros/%s)" % (rosdistro))
+            help="overrides the default installation prefix (%s)" % (default_install_prefix))
         add('--os-name', default='arch',
-            help="overrides os_name, set to 'os_name' by default")
+            help="overrides os_name, set to 'arch' by default")
+        add('--os-not-required', default=False, action="store_true",
+            help="Do not error if this os is not in the platforms "
+                 "list for rosdistro")
 
     def handle_arguments(self, args):
         self.interactive = args.interactive
         self.arch_inc = args.arch_inc
         self.os_name = args.os_name
+        self.distros = args.distros
+        if self.distros in [None, []]:
+            index = rosdistro.get_index(rosdistro.get_index_url())
+            distribution_file = rosdistro.get_distribution_file(index, self.rosdistro)
+            if self.os_name not in distribution_file.release_platforms:
+                if args.os_not_required:
+                    warning("No platforms defined for os '{0}' in release file for the "
+                            "'{1}' distro. This os was not required; continuing without error."
+                            .format(self.os_name, self.rosdistro))
+                    sys.exit(0)
+                error("No platforms defined for os '{0}' in release file for the '{1}' distro."
+                      .format(self.os_name, self.rosdistro), exit=True)
+            self.distros = distribution_file.release_platforms[self.os_name]
         self.install_prefix = args.install_prefix
         if args.install_prefix is None:
             self.install_prefix = self.default_install_prefix
         self.prefix = args.prefix
-        self.branches = match_branches_with_prefix(self.prefix, get_branches)
+        self.branches = match_branches_with_prefix(self.prefix, get_branches, prune=not args.match_all)
         if len(self.branches) == 0:
             error(
                 "No packages found, check your --prefix or --src arguments.",
@@ -481,6 +521,76 @@ class ArchGenerator(BloomGenerator):
     def update_rosdep(self):
         update_rosdep()
         self.has_run_rosdep = True
+
+    def _check_all_keys_are_valid(self, peer_packages):
+        keys_to_resolve = []
+        key_to_packages_which_depends_on = collections.defaultdict(list)
+        keys_to_ignore = set()
+        for package in self.packages.values():
+            depends = package.run_depends + package.buildtool_export_depends
+            build_depends = package.build_depends + package.buildtool_depends + package.test_depends
+            unresolved_keys = depends + build_depends + package.replaces + package.conflicts
+            keys_to_ignore = keys_to_ignore.union(package.replaces + package.conflicts)
+            keys = [d.name for d in unresolved_keys]
+            keys_to_resolve.extend(keys)
+            for key in keys:
+                key_to_packages_which_depends_on[key].append(package.name)
+
+        os_name = self.os_name
+        rosdistro = self.rosdistro
+        all_keys_valid = True
+        for key in sorted(set(keys_to_resolve)):
+            for os_version in self.distros:
+                try:
+                    extended_peer_packages = peer_packages + [d.name for d in keys_to_ignore]
+                    rule, installer_key, default_installer_key = \
+                        resolve_rosdep_key(key, os_name, os_version, rosdistro, extended_peer_packages,
+                                           retry=False)
+                    if rule is None:
+                        continue
+                    if installer_key != default_installer_key:
+                        error("Key '{0}' resolved to '{1}' with installer '{2}', "
+                              "which does not match the default installer '{3}'."
+                              .format(key, rule, installer_key, default_installer_key))
+                        BloomGenerator.exit(
+                            "The PKGBUILD generator does not support dependencies "
+                            "which are installed with the '{0}' installer."
+                            .format(installer_key),
+                            returncode=code.GENERATOR_INVALID_INSTALLER_KEY)
+                except (GeneratorError, RuntimeError) as e:
+                    print(fmt("Failed to resolve @{cf}@!{key}@| on @{bf}{os_name}@|:@{cf}@!{os_version}@| with: {e}")
+                          .format(**locals()))
+                    print(fmt("@{cf}@!{0}@| is depended on by these packages: ").format(key) +
+                          str(list(set(key_to_packages_which_depends_on[key]))))
+                    print(fmt("@{kf}@!<== @{rf}@!Failed@|"))
+                    all_keys_valid = False
+        return all_keys_valid
+
+    def pre_modify(self):
+        info("\nPre-verifying PKGBUILD dependency keys...")
+        # Run rosdep update is needed
+        if not self.has_run_rosdep:
+            self.update_rosdep()
+
+        peer_packages = [p.name for p in self.packages.values()]
+
+        while not self._check_all_keys_are_valid(peer_packages):
+            error("Some of the dependencies for packages in this repository could not be resolved by rosdep.")
+            error("You can try to address the issues which appear above and try again if you wish.")
+            try:
+                if not maybe_continue(msg="Would you like to try again?"):
+                    error("User aborted after rosdep keys were not resolved.")
+                    sys.exit(code.GENERATOR_NO_ROSDEP_KEY_FOR_DISTRO)
+            except (KeyboardInterrupt, EOFError):
+                error("\nUser quit.", exit=True)
+            update_rosdep()
+            invalidate_view_cache()
+
+        info("All keys are " + ansi('greenf') + "OK" + ansi('reset') + "\n")
+
+        for package in self.packages.values():
+            if not package.licenses or not package.licenses[0]:
+                error("No license set for package '{0}', aborting.".format(package.name), exit=True)
 
     def pre_branch(self, destination, source):
         if destination in self.arch_branches:
@@ -637,12 +747,12 @@ class ArchGenerator(BloomGenerator):
             fallback_resolver=missing_dep_resolver
         )
 
-    def generate_arch(self, package, arch_dir='arch'):
-        info("Generating PKGBUILD")
+    def generate_arch(self, package, arch_distro, arch_dir='arch'):
+        info("Generating PKGBUILD for {0}...".format(arch_distro))
         # Try to retrieve the releaser_history
         releaser_history = self.get_releaser_history()
         # Generate substitution values
-        subs = self.get_subs(package, releaser_history)
+        subs = self.get_subs(package, arch_distro, releaser_history)
         # Use subs to create and store releaser history
         self.set_releaser_history(dict(subs['changelogs']))
         # Template files
@@ -652,12 +762,13 @@ class ArchGenerator(BloomGenerator):
         # Add changes to the arch folder
         execute_command('git add ' + arch_dir)
         # Commit changes
-        execute_command('git commit -m "Generated PKGBUILD files"')
+        execute_command('git commit -m "Generated PKGBUILD files for ' +
+                        arch_distro + '"')
         # Return the subs for other use
         return subs
 
     def generate_tag_name(self, data):
-        tag_name = '{Package}-{Version}-{PKGBUILDInc}_{Distribution}'
+        tag_name = '{Package}-{Version}-{Pkgrel}_{Distribution}'
         tag_name = 'arch/' + tag_name.format(**data)
         return tag_name
 
@@ -667,7 +778,7 @@ class ArchGenerator(BloomGenerator):
         arch_branch = 'arch/' + n
         # Branch first to the arch branch
         args = [[arch_branch, branch, False]]
-        # Then for each PKGBUILD distro, branch from the base arch branch
+        # Then for each arch distro, branch from the base arch branch
         args.extend([
             ['arch/' + d + '/' + n, arch_branch, False] for d in self.distros
         ])

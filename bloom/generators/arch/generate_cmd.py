@@ -46,6 +46,8 @@ from bloom.generators.arch.generator import generate_substitutions_from_package
 from bloom.generators.arch.generator import place_template_files
 from bloom.generators.arch.generator import process_template_files
 
+from bloom.util import get_distro_list_prompt
+
 try:
     from rosdep2 import create_default_installer_context
 except ImportError:
@@ -72,7 +74,7 @@ def prepare_arguments(parser):
     add = parser.add_argument
     add('--os-name', help='OS name, e.g. fedora, rhel')
     add('--os-version', help='OS version or codename, e.g. heisenbug, santiago')
-    add('--ros-distro', help='ROS distro, e.g. groovy, hydro (used for rosdep)')
+    add('--ros-distro', help="ROS distro, e.g. %s (used for rosdep)" % get_distro_list_prompt())
     return parser
 
 
@@ -104,7 +106,7 @@ def main(args=None, get_subs_fn=None):
 
     os_data = create_default_installer_context().get_os_name_and_version()
     os_name, os_version = os_data
-    ros_distro = os.environ.get('ROS_DISTRO', 'hydro')
+    ros_distro = os.environ.get('ROS_DISTRO', 'indigo')
 
     # Allow args overrides
     os_name = args.os_name or os_name

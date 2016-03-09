@@ -44,6 +44,7 @@ from bloom.generators.arch.generate_cmd import prepare_arguments
 
 from bloom.logging import info
 
+from bloom.util import get_distro_list_prompt
 
 class RosArchGenerator(ArchGenerator):
     title = 'rosarch'
@@ -54,7 +55,7 @@ class RosArchGenerator(ArchGenerator):
     def prepare_arguments(self, parser):
         # Add command line arguments for this generator
         add = parser.add_argument
-        add('rosdistro', help="ROS distro to target (groovy, hydro, etc...)")
+        add('rosdistro', help="ROS distro to target (%s, etc.)" % get_distro_list_prompt())
         return ArchGenerator.prepare_arguments(self, parser)
 
     def handle_arguments(self, args):
