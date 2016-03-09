@@ -49,7 +49,7 @@ prepare() {
   # Build project
   cmake "${srcdir}/${_dir}" \
         -DCMAKE_BUILD_TYPE=Release \
-        -DCATKIN_BUILD_BINARY_PACKAGE=ON \
+        -DCATKIN_BUILD_BINARY_PACKAGE=@(IsBinary ? "ON" ! "OFF") \
         -DCMAKE_INSTALL_PREFIX=@(InstallationPrefix) \
         -DPYTHON_EXECUTABLE=@(PythonExecutable) \
         -DPYTHON_INCLUDE_DIR=@(PythonIncludeDir) \

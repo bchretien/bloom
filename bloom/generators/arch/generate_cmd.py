@@ -72,8 +72,8 @@ def prepare_arguments(parser):
     add('--process-template-files', action='store_true',
         help="processes templates in arch/* only")
     add = parser.add_argument
-    add('--os-name', help='OS name, e.g. fedora, rhel')
-    add('--os-version', help='OS version or codename, e.g. heisenbug, santiago')
+    add('--os-name', help='OS name, e.g. arch')
+    add('--os-version', help='OS version or codename')
     add('--ros-distro', help="ROS distro, e.g. %s (used for rosdep)" % get_distro_list_prompt())
     return parser
 

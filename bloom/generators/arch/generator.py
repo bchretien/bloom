@@ -267,6 +267,8 @@ def generate_substitutions_from_package(
     data['ROSDistro'] = ros_distro
     # Installation prefix
     data['InstallationPrefix'] = installation_prefix
+    # Catkin binary package
+    data['IsBinary'] = package.name != 'catkin'
 
     # Python support
     python_version = "2.7" # TODO: make it settable by the user
